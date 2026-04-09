@@ -17,9 +17,9 @@ Based on `app_spec.md`, create `feature_list.json` with detailed test cases.
 [
   {
     "id": 1,
+    "title": "Short descriptive title",
     "category": "functional",
-    "feature": "Feature name from spec",
-    "description": "What this test verifies",
+    "description": "What this task covers and what to verify",
     "steps": [
       "Step 1: Navigate to page",
       "Step 2: Perform action",
@@ -31,6 +31,7 @@ Based on `app_spec.md`, create `feature_list.json` with detailed test cases.
 ```
 
 **Requirements:**
+- Every task MUST have `id` (sequential integer) and `title` (human-readable)
 - Both "functional" and "style" categories
 - Mix of narrow (2-5 steps) and comprehensive (10+ steps) tests
 - Order by priority: foundational features first
@@ -47,7 +48,13 @@ Setup script for the development environment:
 2. Start dev servers
 3. Print access URLs
 
-### STEP 4: Initialize Git
+### STEP 4: Copy CLAUDE.md
+
+If a `CLAUDE.md` template exists in the harness `templates/` directory,
+copy it to the project root. This file is automatically read by Claude Code
+at the start of every future session — it replaces custom prompt injection.
+
+### STEP 5: Initialize Git
 
 ```bash
 git init
@@ -55,11 +62,11 @@ git add .
 git commit -m "Initial setup: feature_list, init.sh, project structure"
 ```
 
-### STEP 5: Create Project Structure
+### STEP 6: Create Project Structure
 
 Set up frontend (React+Vite) and backend (FastAPI) scaffold.
 
-### STEP 6: Begin Implementation
+### STEP 7: Begin Implementation
 
 Start implementing the highest-priority features. Work on ONE at a time.
 Test thoroughly before marking `"passes": true`.
@@ -70,3 +77,30 @@ Test thoroughly before marking `"passes": true`.
 2. Create/update `claude-progress.txt`
 3. Ensure feature_list.json is saved
 4. Leave environment clean
+
+---
+
+## ⚠️ Blocking Protocol
+
+**If a task cannot be completed or tested, you MUST follow these rules:**
+
+### When to stop:
+- Missing environment config (API keys, external services)
+- External dependencies unavailable
+- Testing impossible (requires human auth, hardware, etc.)
+
+### When blocked — DO:
+- ✅ Record progress and blocking reason in `claude-progress.txt`
+- ✅ Output clear blocking info:
+  ```
+  🚫 BLOCKED — Human intervention needed
+  Current task: [title]
+  Blocking reason: [specific explanation]
+  Human action required: [steps]
+  ```
+- ✅ Stop the task immediately
+
+### When blocked — DO NOT:
+- ❌ Make a git commit
+- ❌ Set `passes` to `true`
+- ❌ Pretend the task is complete
