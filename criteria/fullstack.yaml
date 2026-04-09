@@ -1,0 +1,73 @@
+# Full-Stack Application Grading Criteria
+# Reference: Anthropic's harness design article
+#
+# Key insight from the article:
+# - Claude scores well on Craft and Functionality by default
+# - Design Quality and Originality need explicit emphasis
+# - Self-evaluation is unreliable → separate Evaluator agent
+
+dimensions:
+  functionality:
+    weight: 0.30
+    threshold: 7
+    description: |
+      Features work end-to-end through the UI. Users can complete
+      primary workflows without encountering broken paths.
+    fail_signals:
+      - Buttons/links that don't respond
+      - Forms that don't validate or submit
+      - API endpoints returning errors
+      - Database operations silently failing
+      - Core feature not wired up to runtime
+
+  design_quality:
+    weight: 0.25
+    threshold: 6
+    description: |
+      The design feels like a coherent whole rather than a collection of parts.
+      Colors, typography, layout, and details combine to create a distinct
+      mood and identity.
+    fail_signals:
+      - No visual identity or theme
+      - Inconsistent spacing or alignment
+      - Generic "AI slop" patterns (purple gradients over white cards)
+      - Layout wastes viewport space
+      - No responsive considerations
+
+  code_quality:
+    weight: 0.20
+    threshold: 6
+    description: |
+      Code is well-structured with proper error handling, clear naming,
+      and maintainable architecture.
+    fail_signals:
+      - No error handling on API calls
+      - Hardcoded values that should be configurable
+      - No separation of concerns
+      - TODO stubs in critical paths
+      - Console errors in browser
+
+  product_depth:
+    weight: 0.15
+    threshold: 5
+    description: |
+      The application handles edge cases and guides users through workflows.
+      Interactions feel intuitive.
+    fail_signals:
+      - No loading states
+      - No empty states
+      - No error messages for users
+      - Workflow requires guessing the sequence
+      - No confirmation for destructive actions
+
+  originality:
+    weight: 0.10
+    threshold: 5
+    description: |
+      Evidence of custom design decisions rather than template defaults
+      and library stock components.
+    fail_signals:
+      - Unmodified component library defaults
+      - Generic placeholder content
+      - No custom color palette or typography choices
+      - Cookie-cutter layout with no personality
