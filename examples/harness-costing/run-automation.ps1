@@ -19,7 +19,7 @@ $BunExe = "C:\Users\lyvee\.bun\bin\bun.exe"
 # Log directory (absolute path)
 $LogDir = Join-Path $ProjectDir "automation-logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-$LogFile = Join-Path $LogDir "automation-$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+$LogFile = Join-Path $LogDir ("automation-" + (Get-Date -Format 'yyyyMMdd_HHmmss') + ".log")
 
 function Write-Log {
     param([string]$Level, [string]$Message)
@@ -104,7 +104,7 @@ for ($run = 1; $run -le $TotalRuns; $run++) {
 
     Write-Log "INFO" "Tasks remaining: $remaining"
     $runStart = Get-Date
-    $runLog = Join-Path $LogDir "run-$run-$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+    $runLog = Join-Path $LogDir ("run-" + $run + "-" + (Get-Date -Format 'yyyyMMdd_HHmmss') + ".log")
 
     Write-Log "INFO" "Starting Claude Code -p mode..."
 
@@ -117,20 +117,21 @@ for ($run = 1; $run -le $TotalRuns; $run++) {
             2>&1 | Tee-Object -FilePath $runLog
     }
     catch {
-        Write-Log "WARNING" "Round $run exception: $_"
+        Write-Log "WARNING" ("Round " + $run + " exception: " + $_)
     }
     finally {
         Pop-Location
     }
 
-    $duration = ((Get-Date) - $runStart).TotalSeconds
+    $runEnd = Get-Date
+    $secs = [math]::Round(($runEnd - $runStart).TotalSeconds)
     $remainingAfter = Get-PendingTaskCount
     $completed = $remaining - $remainingAfter
 
     if ($completed -gt 0) {
-        Write-Log "SUCCESS" "Round $run: $completed task(s) done (${duration}s)"
+        Write-Log "SUCCESS" ("Round " + $run + ": " + $completed + " task(s) done (" + $secs + "s)")
     } else {
-        Write-Log "WARNING" "Round $run: 0 tasks done (${duration}s) - may need attention"
+        Write-Log "WARNING" ("Round " + $run + ": 0 tasks done (" + $secs + "s) - may need attention")
     }
 
     Write-Log "INFO" "Remaining tasks: $remainingAfter"
@@ -149,5 +150,5 @@ Write-Host "========================================" -ForegroundColor Green
 
 $finalRemaining = Get-PendingTaskCount
 $totalCompleted = $InitialTasks - $finalRemaining
-Write-Log "INFO" "Completed: $totalCompleted | Remaining: $finalRemaining"
+Write-Log "INFO" ("Completed: " + $totalCompleted + " | Remaining: " + $finalRemaining)
 Write-Log "INFO" "Log: $LogFile"
