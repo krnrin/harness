@@ -1,7 +1,11 @@
 # =============================================================================
-# run-loop.ps1 - Auto loop: poll task.json, kill process on completion, repeat
+# run-loop.ps1 - Auto loop using stdin file input (mirrors SamuelQZQ approach)
 # =============================================================================
 # Usage: powershell -ExecutionPolicy Bypass -File run-loop.ps1 37
+#
+# Root cause: cloud-code's -p mode only exits when stdin closes.
+# Passing prompt as CLI arg keeps stdin open -> process never exits.
+# Fix: write prompt to temp file, pipe via stdin, file EOF closes stdin.
 # =============================================================================
 
 param(
@@ -12,8 +16,6 @@ $ProjectDir = "D:\harness-project"
 $ClaudeCodeDir = "C:\Users\lyvee\source\cloud-code"
 $BunExe = "C:\Users\lyvee\.bun\bin\bun.exe"
 $TaskFile = Join-Path $ProjectDir "task.json"
-$HardTimeoutMin = 45
-$PollSec = 30
 
 $LogDir = Join-Path $ProjectDir "automation-logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
@@ -26,18 +28,20 @@ function Get-TaskCount([string]$status) {
     return 0
 }
 
-function Get-HeadCommit {
-    $r = git -C $ProjectDir rev-parse HEAD 2>$null
-    if ($LASTEXITCODE -eq 0) { return $r } else { return "none" }
-}
+# Write prompt to a temp file (UTF-8 no BOM)
+$PromptText = @"
+You are in $ProjectDir. Read CLAUDE.md for project rules, then read task.json. Find the next pending task (respect depends_on, pick smallest id with all deps done). Implement it fully including backend and frontend code, run tests, update progress.txt, mark task done in task.json, and git commit all changes. Complete ONE task then exit.
+"@
 
-$Prompt = "You are in $ProjectDir. Read CLAUDE.md for project rules, then read task.json. Find the next pending task (respect depends_on, pick smallest id with all deps done). Implement it fully including backend and frontend code, run tests, update progress.txt, mark task done in task.json, and git commit all changes. Complete ONE task then exit."
+$PromptFile = Join-Path $LogDir "prompt.txt"
+[System.IO.File]::WriteAllText($PromptFile, $PromptText, (New-Object System.Text.UTF8Encoding $false))
 
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Harness Costing - Smart Auto Loop" -ForegroundColor Cyan
+Write-Host "  Harness Costing - Auto Loop (stdin)" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host "[INFO] Pending: $(Get-TaskCount 'pending') | Done: $(Get-TaskCount 'done')" -ForegroundColor Blue
+Write-Host "[INFO] Prompt file: $PromptFile" -ForegroundColor Blue
 Write-Host ""
 
 for ($round = 1; $round -le $TotalRuns; $round++) {
@@ -51,90 +55,34 @@ for ($round = 1; $round -le $TotalRuns; $round++) {
 
     Write-Host "== Round $round / $TotalRuns == Pending: $pending | Done: $done ==" -ForegroundColor Cyan
 
-    $commitBefore = Get-HeadCommit
     $roundStart = Get-Date
+    $runLog = Join-Path $LogDir ("round-" + $round + "-" + (Get-Date -Format 'yyyyMMdd_HHmmss') + ".log")
 
-    # Start bun as a Job so we can kill it cleanly without blocking
-    $job = Start-Job -ScriptBlock {
-        param($BunExe, $ClaudeCodeDir, $Prompt, $ProjectDir)
-        Set-Location $ClaudeCodeDir
-        & $BunExe run dev -- -p $Prompt --dangerously-skip-permissions --add-dir $ProjectDir --allowed-tools "Bash Edit Read Write Glob Grep Task WebSearch WebFetch mcp__playwright__*" 2>&1
-    } -ArgumentList $BunExe, $ClaudeCodeDir, $Prompt, $ProjectDir
+    Write-Host "[INFO] Starting round (stdin mode)..." -ForegroundColor Blue
 
-    Write-Host "[INFO] Job started (Id: $($job.Id))" -ForegroundColor Blue
-
-    # Poll until task completed or timeout
-    $completed = $false
-    $stableHits = 0
-
-    while ($true) {
-        Start-Sleep -Seconds $PollSec
-
-        $elapsed = [math]::Round(((Get-Date) - $roundStart).TotalMinutes, 1)
-
-        # Hard timeout
-        if ($elapsed -gt $HardTimeoutMin) {
-            Write-Host "[TIMEOUT] $HardTimeoutMin min reached, moving on." -ForegroundColor Yellow
-            break
-        }
-
-        # Check job state - if it already finished on its own, great
-        if ($job.State -eq "Completed" -or $job.State -eq "Failed") {
-            Write-Host "[INFO] Process exited on its own ($($job.State))." -ForegroundColor Blue
-            $completed = $true
-            break
-        }
-
-        # Poll task.json and git
-        $nowPending = Get-TaskCount "pending"
-        $nowDone = Get-TaskCount "done"
-        $nowCommit = Get-HeadCommit
-
-        $changed = ($nowPending -lt $pending) -or ($nowDone -gt $done) -or ($nowCommit -ne $commitBefore)
-
-        if ($changed) {
-            $stableHits++
-        } else {
-            $stableHits = 0
-        }
-
-        $shortCommit = if ($nowCommit.Length -gt 8) { $nowCommit.Substring(0, 8) } else { $nowCommit }
-        Write-Host "[POLL $elapsed min] P:$nowPending D:$nowDone Commit:$shortCommit Hits:$stableHits" -ForegroundColor DarkGray
-
-        # 2 consecutive hits = confirmed done
-        if ($stableHits -ge 2) {
-            Write-Host "[DETECTED] Task completed!" -ForegroundColor Green
-            $completed = $true
-            Start-Sleep -Seconds 10  # Let git commit finish
-            break
-        }
+    # KEY FIX: Use cmd /c to pipe file content via stdin
+    # When the file is fully read, stdin closes -> process exits cleanly
+    try {
+        cmd /c "cd /d `"$ClaudeCodeDir`" && type `"$PromptFile`" | `"$BunExe`" run dev -- -p --dangerously-skip-permissions --add-dir `"$ProjectDir`" --allowed-tools `"Bash Edit Read Write Glob Grep Task WebSearch WebFetch mcp__playwright__*`" 2>&1" | Tee-Object -FilePath $runLog
+    }
+    catch {
+        Write-Host "[WARNING] Exception: $_" -ForegroundColor Yellow
     }
 
-    # Clean up the job
-    Write-Host "[INFO] Stopping job..." -ForegroundColor Blue
-    Stop-Job -Job $job -ErrorAction SilentlyContinue
-    $output = Receive-Job -Job $job -ErrorAction SilentlyContinue
-    Remove-Job -Job $job -Force -ErrorAction SilentlyContinue
-
-    # Also kill any leftover bun child processes from the job
-    # Only kill bun processes whose command line contains our prompt (safe)
-    Get-CimInstance Win32_Process -Filter "Name = 'bun.exe'" -ErrorAction SilentlyContinue |
-        Where-Object { $_.CommandLine -match "dangerously-skip-permissions" } |
-        ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-
-    # Save output to log
-    $logFile = Join-Path $LogDir ("round-" + $round + ".log")
-    if ($output) { $output | Out-File -FilePath $logFile -Encoding UTF8 }
-
     $secs = [math]::Round(((Get-Date) - $roundStart).TotalSeconds)
+    $afterPending = Get-TaskCount "pending"
     $afterDone = Get-TaskCount "done"
     $tasksDone = $afterDone - $done
 
-    Write-Host "[RESULT] Round $round: +$tasksDone task(s) in $secs s | Total done: $afterDone" -ForegroundColor $(if ($tasksDone -gt 0) { "Green" } else { "Yellow" })
+    if ($tasksDone -gt 0) {
+        Write-Host "[SUCCESS] Round $round: +$tasksDone task(s) in $secs s" -ForegroundColor Green
+    } else {
+        Write-Host "[WARNING] Round $round: 0 tasks in $secs s" -ForegroundColor Yellow
+    }
+    Write-Host "[INFO] Total: $afterDone done, $afterPending pending" -ForegroundColor Blue
     Write-Host ""
 
-    # Brief pause
-    Start-Sleep -Seconds 5
+    Start-Sleep -Seconds 3
 }
 
 Write-Host ""
@@ -143,3 +91,6 @@ Write-Host "  ALL DONE" -ForegroundColor Green
 Write-Host "========================================" -ForegroundColor Green
 Write-Host "[FINAL] Done: $(Get-TaskCount 'done') | Pending: $(Get-TaskCount 'pending')" -ForegroundColor Green
 git -C $ProjectDir log --oneline -15
+
+# Clean up
+Remove-Item -Path $PromptFile -Force -ErrorAction SilentlyContinue
