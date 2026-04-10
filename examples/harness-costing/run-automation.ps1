@@ -1,11 +1,7 @@
 # =============================================================================
-# run-automation.ps1 - Windows Automated Task Loop (-p mode)
+# run-automation.ps1 - Windows Automated Task Loop (-p mode, single-line prompt)
 # =============================================================================
 # Usage: powershell -ExecutionPolicy Bypass -File run-automation.ps1 38
-# Param: Total rounds (default 38 = total tasks in task.json)
-# Prerequisites:
-#   1. Junction: cmd /c mklink /J D:\harness-project "D:\<your-chinese-path>"
-#   2. Valid token selected in cloud-code interactive mode
 # =============================================================================
 
 param(
@@ -16,7 +12,6 @@ $ProjectDir = "D:\harness-project"
 $ClaudeCodeDir = "C:\Users\lyvee\source\cloud-code"
 $BunExe = "C:\Users\lyvee\.bun\bin\bun.exe"
 
-# Log directory (absolute path)
 $LogDir = Join-Path $ProjectDir "automation-logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $LogFile = Join-Path $LogDir ("automation-" + (Get-Date -Format 'yyyyMMdd_HHmmss') + ".log")
@@ -24,8 +19,7 @@ $LogFile = Join-Path $LogDir ("automation-" + (Get-Date -Format 'yyyyMMdd_HHmmss
 function Write-Log {
     param([string]$Level, [string]$Message)
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
-    $logLine = "$timestamp [$Level] $Message"
-    Add-Content -Path $LogFile -Value $logLine
+    Add-Content -Path $LogFile -Value "$timestamp [$Level] $Message"
     switch ($Level) {
         "INFO"     { Write-Host "[INFO] $Message" -ForegroundColor Blue }
         "SUCCESS"  { Write-Host "[SUCCESS] $Message" -ForegroundColor Green }
@@ -44,24 +38,13 @@ function Get-PendingTaskCount {
     return 0
 }
 
-# Banner
-Write-Host ""
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  Harness Costing Engine - Auto Dev Loop" -ForegroundColor Cyan
-Write-Host "========================================" -ForegroundColor Cyan
-Write-Host ""
-
-# Check junction exists
 if (-not (Test-Path $ProjectDir)) {
-    Write-Log "ERROR" "$ProjectDir not found! Create junction first:"
-    Write-Log "ERROR" '  cmd /c mklink /J D:\harness-project "D:\<your-path>"'
+    Write-Log "ERROR" "D:\harness-project not found! Run: cmd /c mklink /J D:\harness-project <your-path>"
     exit 1
 }
 
-# Check required files
 foreach ($file in @("task.json", "CLAUDE.md", "app_spec.md")) {
-    $fullPath = Join-Path $ProjectDir $file
-    if (-not (Test-Path $fullPath)) {
+    if (-not (Test-Path (Join-Path $ProjectDir $file))) {
         Write-Log "ERROR" "$file not found in $ProjectDir!"
         exit 1
     }
@@ -70,30 +53,22 @@ foreach ($file in @("task.json", "CLAUDE.md", "app_spec.md")) {
 New-Item -ItemType Directory -Force -Path (Join-Path $ProjectDir "test-screenshots") | Out-Null
 
 $InitialTasks = Get-PendingTaskCount
-Write-Log "INFO" "Starting automation, planned $TotalRuns rounds"
-Write-Log "INFO" "Project dir: $ProjectDir"
-Write-Log "INFO" "Remaining tasks: $InitialTasks"
-Write-Log "INFO" "Log file: $LogFile"
 
-# Prompt for -p mode
-$Prompt = @"
-cd $ProjectDir
-Read CLAUDE.md and task.json. Find the next pending task with status "pending" (respect depends_on, pick smallest id that has all deps done). Implement it fully:
-- Backend: create models, routes, services as specified
-- Frontend: create pages, components as specified
-- Test: pytest for backend, build check for frontend
-- Update progress.txt with what you did
-- Update task.json: set this task status to "done"
-- Git commit ALL changes in a single commit
-Complete exactly ONE task then exit.
-Do NOT ask questions. Do NOT wait for confirmation. Just do it.
-"@
+Write-Host ""
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host "  Harness Costing Engine - Auto Dev Loop" -ForegroundColor Cyan
+Write-Host "========================================" -ForegroundColor Cyan
+Write-Host ""
+Write-Log "INFO" "Planned $TotalRuns rounds, $InitialTasks tasks remaining"
+Write-Log "INFO" "Log: $LogFile"
 
-# Main loop
+# Single-line prompt (multi-line here-strings break -p mode)
+$Prompt = "cd $ProjectDir && cat CLAUDE.md && cat task.json && echo 'Find the next pending task with status pending (respect depends_on, pick smallest id with all deps done). Implement it fully: backend models/routes/services, frontend pages/components, run tests, update progress.txt, set task status to done in task.json, git commit all changes in one commit. Complete exactly ONE task then exit. Do NOT ask questions. Do NOT wait for confirmation. Just do it.'"
+
 for ($run = 1; $run -le $TotalRuns; $run++) {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Log "PROGRESS" "Round $run / $TotalRuns"
+    Write-Log "PROGRESS" ("Round " + $run + " / " + $TotalRuns)
     Write-Host "========================================" -ForegroundColor Cyan
 
     $remaining = Get-PendingTaskCount
@@ -106,43 +81,37 @@ for ($run = 1; $run -le $TotalRuns; $run++) {
     $runStart = Get-Date
     $runLog = Join-Path $LogDir ("run-" + $run + "-" + (Get-Date -Format 'yyyyMMdd_HHmmss') + ".log")
 
-    Write-Log "INFO" "Starting Claude Code -p mode..."
+    Write-Log "INFO" "Starting round..."
 
     try {
         Push-Location $ClaudeCodeDir
-        & $BunExe run dev -- -p $Prompt `
-            --dangerously-skip-permissions `
-            --add-dir $ProjectDir `
-            --allowed-tools "Bash Edit Read Write Glob Grep Task WebSearch WebFetch mcp__playwright__*" `
-            2>&1 | Tee-Object -FilePath $runLog
+        & $BunExe run dev -- -p $Prompt --dangerously-skip-permissions --add-dir $ProjectDir --allowed-tools "Bash Edit Read Write Glob Grep Task WebSearch WebFetch mcp__playwright__*" 2>&1 | Tee-Object -FilePath $runLog
     }
     catch {
-        Write-Log "WARNING" ("Round " + $run + " exception: " + $_)
+        Write-Log "WARNING" ("Exception: " + $_)
     }
     finally {
         Pop-Location
     }
 
-    $runEnd = Get-Date
-    $secs = [math]::Round(($runEnd - $runStart).TotalSeconds)
+    $secs = [math]::Round(((Get-Date) - $runStart).TotalSeconds)
     $remainingAfter = Get-PendingTaskCount
     $completed = $remaining - $remainingAfter
 
     if ($completed -gt 0) {
-        Write-Log "SUCCESS" ("Round " + $run + ": " + $completed + " task(s) done (" + $secs + "s)")
+        Write-Log "SUCCESS" ("Round " + $run + " done: " + $completed + " task(s) in " + $secs + "s")
     } else {
-        Write-Log "WARNING" ("Round " + $run + ": 0 tasks done (" + $secs + "s) - may need attention")
+        Write-Log "WARNING" ("Round " + $run + " done: 0 tasks in " + $secs + "s")
     }
 
-    Write-Log "INFO" "Remaining tasks: $remainingAfter"
+    Write-Log "INFO" "Remaining: $remainingAfter"
 
     if ($run -lt $TotalRuns -and $remainingAfter -gt 0) {
-        Write-Log "INFO" "Waiting 3 seconds..."
+        Write-Log "INFO" "Waiting 3s..."
         Start-Sleep -Seconds 3
     }
 }
 
-# Summary
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
 Write-Log "SUCCESS" "Automation finished!"
@@ -150,5 +119,4 @@ Write-Host "========================================" -ForegroundColor Green
 
 $finalRemaining = Get-PendingTaskCount
 $totalCompleted = $InitialTasks - $finalRemaining
-Write-Log "INFO" ("Completed: " + $totalCompleted + " | Remaining: " + $finalRemaining)
-Write-Log "INFO" "Log: $LogFile"
+Write-Log "INFO" ("Done: " + $totalCompleted + " | Left: " + $finalRemaining)
