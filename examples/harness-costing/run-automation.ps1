@@ -1,5 +1,5 @@
 # =============================================================================
-# run-automation.ps1 - Windows Automated Task Loop
+# run-automation.ps1 - Windows Automated Task Loop (Interactive Mode)
 # =============================================================================
 # Usage: powershell -ExecutionPolicy Bypass -File run-automation.ps1 38
 # Param: Total rounds (default 38 = total tasks in task.json)
@@ -12,7 +12,7 @@ param(
 # Project directory = where this script is run from (absolute)
 $ProjectDir = (Get-Location).Path
 
-# Log directory (absolute path so Push-Location won't break it)
+# Log directory (absolute path)
 $LogDir = Join-Path $ProjectDir "automation-logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $LogFile = Join-Path $LogDir "automation-$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
@@ -70,21 +70,20 @@ Write-Log "INFO" "Claude Code dir: $ClaudeCodeDir"
 Write-Log "INFO" "Remaining tasks: $InitialTasks"
 Write-Log "INFO" "Log file: $LogFile"
 
-# Prompt template - includes cd to project dir so Claude works there
+# Prompt - will be piped via stdin (no -p flag, uses interactive auth)
 $Prompt = @"
-First, run: cd $ProjectDir
+cd $ProjectDir
 
-Then follow the workflow in CLAUDE.md:
-1. Run .\init.ps1 to initialize the environment
-2. Read task.json and select the next task with status: "pending" (respect depends_on)
-3. Implement the task following all steps in scope
-4. Test thoroughly (pytest for backend, Playwright MCP for frontend)
-5. Update progress.txt with your work
-6. Update task.json status to "done" and commit all changes in a single commit
+Read CLAUDE.md and task.json. Find the next pending task with status "pending" (respect depends_on, pick smallest id that has all deps done). Implement it fully:
+- Backend: create models, routes, services as specified in scope
+- Frontend: create pages, components as specified in scope
+- Test: pytest for backend, build check for frontend
+- Update progress.txt with what you did
+- Update task.json: set this task's status to "done"
+- Git commit ALL changes in a single commit
 
-Start by reading CLAUDE.md, then task.json to find your task.
-Please complete only ONE task in this session, then stop.
-Do NOT ask if you should continue. Just finish and exit.
+Complete exactly ONE task, then type /exit to quit.
+Do NOT ask questions. Do NOT wait for confirmation. Just do it and exit.
 "@
 
 # Main loop
@@ -106,14 +105,13 @@ for ($run = 1; $run -le $TotalRuns; $run++) {
     $runStart = Get-Date
     $runLog = Join-Path $LogDir "run-$run-$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
     
-    Write-Log "INFO" "Starting Claude Code session..."
+    Write-Log "INFO" "Starting Claude Code session (interactive mode via stdin)..."
     
-    # Switch to Claude Code dir so bun finds the dev script,
-    # then Claude will cd to project dir via the prompt
+    # Use stdin pipe instead of -p flag to avoid auth issues with GPT fork
+    # When stdin closes, the process should exit
     try {
         Push-Location $ClaudeCodeDir
-        & "C:\Users\lyvee\.bun\bin\bun.exe" run dev -- `
-            -p "$Prompt" `
+        $Prompt | & "C:\Users\lyvee\.bun\bin\bun.exe" run dev -- `
             --dangerously-skip-permissions `
             --add-dir "$ProjectDir" `
             --allowed-tools "Bash Edit Read Write Glob Grep Task WebSearch WebFetch mcp__playwright__*" `
@@ -142,8 +140,8 @@ for ($run = 1; $run -le $TotalRuns; $run++) {
     
     # Wait between rounds
     if ($run -lt $TotalRuns -and $remainingAfter -gt 0) {
-        Write-Log "INFO" "Waiting 3 seconds before next round..."
-        Start-Sleep -Seconds 3
+        Write-Log "INFO" "Waiting 5 seconds before next round..."
+        Start-Sleep -Seconds 5
     }
 }
 
