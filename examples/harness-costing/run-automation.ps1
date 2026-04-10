@@ -9,22 +9,22 @@ param(
     [int]$TotalRuns = 38
 )
 
-# Log directory
-$LogDir = ".\automation-logs"
+# Project directory = where this script is run from (absolute)
+$ProjectDir = (Get-Location).Path
+
+# Log directory (absolute path so Push-Location won't break it)
+$LogDir = Join-Path $ProjectDir "automation-logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
-$LogFile = "$LogDir\automation-$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+$LogFile = Join-Path $LogDir "automation-$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 
 # Claude Code source directory (where bun run dev works)
 $ClaudeCodeDir = "C:\Users\lyvee\source\cloud-code"
-
-# Project directory (where task.json / CLAUDE.md live)
-$ProjectDir = Get-Location
 
 function Write-Log {
     param([string]$Level, [string]$Message)
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
     $logLine = "$timestamp [$Level] $Message"
-    Add-Content -Path $LogFile -Value $logLine
+    Add-Content -Path $script:LogFile -Value $logLine
     
     switch ($Level) {
         "INFO"     { Write-Host "[INFO] $Message" -ForegroundColor Blue }
@@ -36,7 +36,7 @@ function Write-Log {
 }
 
 function Get-PendingTaskCount {
-    $taskFile = Join-Path $ProjectDir "task.json"
+    $taskFile = Join-Path $script:ProjectDir "task.json"
     if (Test-Path $taskFile) {
         $content = Get-Content $taskFile -Raw
         return ([regex]::Matches($content, '"status":\s*"pending"')).Count
@@ -53,14 +53,15 @@ Write-Host ""
 
 # Check required files
 foreach ($file in @("task.json", "CLAUDE.md", "app_spec.md")) {
-    if (-not (Test-Path $file)) {
+    $fullPath = Join-Path $ProjectDir $file
+    if (-not (Test-Path $fullPath)) {
         Write-Log "ERROR" "$file not found! Make sure you run from project root."
         exit 1
     }
 }
 
 # Create test-screenshots dir
-New-Item -ItemType Directory -Force -Path ".\test-screenshots" | Out-Null
+New-Item -ItemType Directory -Force -Path (Join-Path $ProjectDir "test-screenshots") | Out-Null
 
 $InitialTasks = Get-PendingTaskCount
 Write-Log "INFO" "Starting automation, planned $TotalRuns rounds"
@@ -103,7 +104,7 @@ for ($run = 1; $run -le $TotalRuns; $run++) {
     Write-Log "INFO" "Tasks remaining before this round: $remaining"
     
     $runStart = Get-Date
-    $runLog = "$LogDir\run-$run-$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+    $runLog = Join-Path $LogDir "run-$run-$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
     
     Write-Log "INFO" "Starting Claude Code session..."
     
