@@ -1,5 +1,5 @@
 # =============================================================================
-# run-automation.ps1 - Windows Automated Task Loop (-p mode, single-line prompt)
+# run-automation.ps1 - Windows Automated Task Loop (-p mode)
 # =============================================================================
 # Usage: powershell -ExecutionPolicy Bypass -File run-automation.ps1 38
 # =============================================================================
@@ -39,7 +39,7 @@ function Get-PendingTaskCount {
 }
 
 if (-not (Test-Path $ProjectDir)) {
-    Write-Log "ERROR" "D:\harness-project not found! Run: cmd /c mklink /J D:\harness-project <your-path>"
+    Write-Log "ERROR" "D:\harness-project not found! Run: cmd /c mklink /J D:\harness-project <path>"
     exit 1
 }
 
@@ -62,8 +62,9 @@ Write-Host ""
 Write-Log "INFO" "Planned $TotalRuns rounds, $InitialTasks tasks remaining"
 Write-Log "INFO" "Log: $LogFile"
 
-# Single-line prompt (multi-line here-strings break -p mode)
-$Prompt = "cd $ProjectDir && cat CLAUDE.md && cat task.json && echo 'Find the next pending task with status pending (respect depends_on, pick smallest id with all deps done). Implement it fully: backend models/routes/services, frontend pages/components, run tests, update progress.txt, set task status to done in task.json, git commit all changes in one commit. Complete exactly ONE task then exit. Do NOT ask questions. Do NOT wait for confirmation. Just do it.'"
+# IMPORTANT: Do NOT cat/dump file contents into the prompt.
+# Let the model use its Read tool to read files - this avoids prompt size issues.
+$Prompt = "You are in $ProjectDir. Read CLAUDE.md for project rules, then read task.json. Find the next pending task (respect depends_on, pick smallest id with all deps done). Implement it fully including backend and frontend code, run tests, update progress.txt, mark task done in task.json, and git commit all changes. Complete ONE task then exit."
 
 for ($run = 1; $run -le $TotalRuns; $run++) {
     Write-Host ""
