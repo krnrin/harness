@@ -15,6 +15,16 @@
 
 **系统定位**: 内部核算结果是系统主对象。客户最终报价单（如吉利模板）仅作为参考对照，不改变系统以内部核算为主的定位。
 
+**三层价格模型**（系统核心概念）:
+
+| 层次 | 名称 | 含义 | 生命周期 |
+|------|------|------|----------|
+| L1 | 内部核算价 | BOM 成本 + 分摊 + 费率 = 系统自动计算的实绩成本 | 随 BOM/费率变化实时更新 |
+| L2 | 客户确认快照价 | 定点/报价确认时客户承认的价格快照 | 客户确认后锁定，不可修改 |
+| L3 | 当前有效执行价 | 基于回收状态动态决定的实际执行价格 | 随回收进度自动切换 |
+
+> **禁止混合计算**：同一计算/对比中，不得将不同层次的价格交叉使用。利润差异只能用 L3 vs L1，不得用 L2 vs L1 或 L3 vs L2 混合。
+
 ---
 
 ## 2. 技术栈
@@ -115,7 +125,7 @@ Scenario {
   lifecycle_years: int           -- 生命周期年限
   volume: int                    -- 生命周期总产量
   install_ratio: decimal         -- 装车比
-  rate_snapshot: JSON            -- 费率快照
+  rate_snapshot: JSON            -- 费率快照（冻结时从全局设置拍照）
   bom_version_ref: string        -- BOM 版本引用
   quote_param_snapshot: JSON     -- 报价参数快照
   source_scenario_id: UUID       -- 来源场景（继承用）
@@ -179,15 +189,22 @@ QuoteSnapshot {
   quote_params: JSON             -- 客户口径参数快照
   quote_result: JSON             -- 客户口径结果
   internal_cost_baseline: decimal
-  profit_gap: decimal            -- 报价 - 内部成本
-  ex_works_price: decimal        -- 出厂价
-  arrival_price: decimal         -- 到厂价
+  profit_gap: decimal            -- effective_customer_price - internal_cost_baseline
+  ex_works_price: decimal        -- 出厂价（不含分摊回收部分）
+  arrival_price: decimal         -- 到厂价（含运输/包装/分摊回收）
+  effective_price: decimal       -- 当前有效执行价（L3，基于回收状态动态决定）
+  effective_price_mode: enum [ex_works, arrival, custom]
+                                 -- 有效价格模式：出厂价模式 / 到厂价模式 / 自定义
+  customer_burden_mode: enum [supplier_full, customer_full, shared, per_item]
+                                 -- 客户承担模式：供应商全担 / 客户全担 / 双方分担 / 按项分别约定
+  recovery_completion_behavior: enum [auto_switch_price, notify_only, manual_confirm]
+                                 -- 回收完成后行为：自动切换价格 / 仅通知 / 人工确认后切换
   allocation_expression: text    -- 分摊费用表达参考
   recovery_expression: text      -- 回收方式表达参考
-  customer_accepted: boolean     -- 是否已定点/客户已承认
-  locked_fields: JSON            -- 财务锁定字段
-  editable_fields: JSON          -- 销售可调字段
-  approval_fields: JSON          -- 需审批字段
+  customer_accepted: boolean     -- 是否已定点/客户已承认（true 后进入 L2 锁定）
+  locked_fields: JSON            -- 财务锁定字段（customer_accepted=true 后不可改）
+  editable_fields: JSON          -- 销售可调字段（即使锁定后仍可调整的字段列表）
+  approval_fields: JSON          -- 需审批字段（修改后需审批才生效的字段列表）
   status: enum [draft, confirmed, released]
   created_at: datetime
   updated_at: datetime
@@ -206,16 +223,22 @@ AllocationItem {
   expense_type: enum [tooling, mold, testing, rnd, other]
   expense_name: string
   total_amount: decimal          -- 总金额
-  allocation_basis: string       -- 分摊依据
-  unit_allocation: decimal       -- 单根分摊金额
+  allocation_basis: string       -- 分摊依据说明
+  baseline_volume: int           -- 分摊基数（独立业务输入，≠ volume × install_ratio）
+  unit_allocation: decimal       -- 单根分摊金额 = total_amount / baseline_volume
   planned_recovery: decimal      -- 计划回收金额
   actual_recovered: decimal      -- 已回收金额
   remaining_recovery: decimal    -- 未回收金额
   recovery_progress: decimal     -- 百分比
-  baseline_volume: int           -- 基线产量
+  burden_side: enum [supplier, customer, shared]
+                                 -- 承担方：供应商承担 / 客户承担 / 双方分担
+  pricing_effect: enum [included_in_price, separate_invoice, internal_only]
+                                 -- 定价影响：含入单价 / 单独开票 / 仅内部核算
+  recovery_completion_behavior: enum [trigger_price_adjust, notify_only, archive]
+                                 -- 回收完成行为：触发调价 / 仅通知 / 直接归档
+  price_adjust_reminder: boolean -- 调价提醒状态（回收完成时是否已提醒）
   target_recovery_date: date
   completed_at: datetime
-  price_adjust_reminder: boolean -- 调价提醒状态
   status: enum [pending, allocated, recovering, completed, closed]
   source_version_id: string
   created_at: datetime
@@ -483,10 +506,11 @@ Project 1──N VersionRecord
 | GET | `/api/scenarios/:sid/quotes` | 报价列表 |
 | POST | `/api/scenarios/:sid/quotes` | 创建报价快照 |
 | GET | `/api/quotes/:qid` | 报价详情 |
-| PUT | `/api/quotes/:qid` | 更新报价参数 |
-| GET | `/api/quotes/:qid/compare` | 报价 vs 内部成本对比 |
+| PUT | `/api/quotes/:qid` | 更新报价参数（受 locked/editable/approval 字段控制） |
+| GET | `/api/quotes/:qid/compare` | 报价 vs 内部成本对比（使用 L3 有效执行价） |
 | GET | `/api/quotes/compare?ids=a,b` | 不同版本/场景报价对比 |
-| POST | `/api/quotes/:qid/confirm` | 确认报价 |
+| POST | `/api/quotes/:qid/confirm` | 确认报价（锁定为 L2 客户确认快照价） |
+| GET | `/api/quotes/:qid/effective-price` | 查询当前有效执行价（L3）及其计算来源 |
 
 ### 6.5 Simulation 与年降管理 (F05)
 
@@ -508,13 +532,14 @@ Project 1──N VersionRecord
 
 | Method | Endpoint | Description |
 |--------|----------|-------------|
-| GET | `/api/scenarios/:sid/allocations` | 分摊项列表 |
-| POST | `/api/scenarios/:sid/allocations` | 新增分摊项 |
-| GET | `/api/allocations/:aid` | 分摊详情 + 回收进度 |
+| GET | `/api/scenarios/:sid/allocations` | 分摊项列表（支持 ?burden_side= 筛选） |
+| POST | `/api/scenarios/:sid/allocations` | 新增分摊项（需指定 burden_side + pricing_effect） |
+| GET | `/api/allocations/:aid` | 分摊详情 + 回收进度 + 承担方信息 |
 | PUT | `/api/allocations/:aid` | 更新分摊/回收状态 |
 | GET | `/api/allocations/:aid/recovery-history` | 回收记录明细 |
 | POST | `/api/allocations/:aid/recovery-records` | 新增回收记录 |
 | GET | `/api/allocations/:aid/recovery-forecast` | 回收预测 |
+| POST | `/api/allocations/:aid/complete` | 标记回收完成（触发 recovery_completion_behavior） |
 
 ### 6.7 设变与跟踪 (F07)
 
@@ -607,22 +632,26 @@ Project 1──N VersionRecord
 新建项目
   → 创建场景（初始报价）
     → 导入/录入 BOM
-      → 系统自动计算内部成本
+      → 系统自动计算内部成本（L1 内部核算价）
         → 创建客户报价快照
-          → 对比内部成本 vs 客户报价
+          → 对比 L1 内部核算价 vs L3 有效执行价
             → 识别利润空间
-              → 确认报价
+              → 确认报价（锁定为 L2 客户确认快照价）
 ```
 
 ### 7.2 分摊回收链路
 
 ```
 录入一次性费用（工装/模具/试验/研发）
-  → 绑定线束号 + 场景
-    → 系统按根计算单根分摊
-      → 按 装车比 × 累计产量 跟踪回收
-        → 回收完成 → 触发调价提醒
-        → 回收滞后 → 触发预警
+  → 指定承担方（burden_side）和定价影响（pricing_effect）
+    → 绑定线束号 + 场景
+      → 系统按 baseline_volume 计算单根分摊
+        → 按 装车比 × 累计产量 跟踪回收
+          → 回收完成 → 按 recovery_completion_behavior 执行：
+             - trigger_price_adjust: 自动触发调价提醒 + 切换有效执行价
+             - notify_only: 仅发送通知
+             - archive: 直接归档
+          → 回收滞后 → 触发预警
 ```
 
 ### 7.3 设变链路
@@ -775,17 +804,35 @@ BOM 发生变化（新增/替换/取消）
 
 **报价主页面**:
 - 场景/线束号 + 客户报价结果 + 内部成本基线 + 差异值 + 利润空间 + 状态
+- 价格展示必须标注所属层次（L1/L2/L3）
 
 **参数区**:
 - 当前报价参数、可调/锁定/待审批字段区分、参数来源
+- `locked_fields` 对应的字段 → 前端 disabled + 🔒 图标
+- `editable_fields` 对应的字段 → 正常可编辑
+- `approval_fields` 对应的字段 → 可编辑但修改后显示 ⚠️ 待审批标记
 
 **对照区（吉利客户）**:
-- 出厂价对照、到厂价对照、分摊费用及回收方式说明、是否已定点/客户已承认
+- 出厂价对照（L1 vs ex_works_price）
+- 到厂价对照（含分摊回收部分）
+- 当前有效执行价（L3）及其计算来源说明
+- 分摊费用及回收方式说明
+- 承担方（burden_side）展示
+- 是否已定点/客户已承认
+
+**有效价格生命周期**:
+1. 报价创建 → `effective_price_mode = ex_works`（默认出厂价模式）
+2. 包含分摊项且分摊计入价格 → `effective_price_mode = arrival`（切换到到厂价模式）
+3. 分摊回收完成 → 根据 `recovery_completion_behavior` 自动/手动切换回 `ex_works`
+4. 客户确认 → `customer_accepted = true` → L2 锁定
 
 **核心规则**:
 - 客户报价 ≠ 内部实绩成本，必须分层
+- 三层价格不得混合计算（同一公式/对比中只能使用同层价格）
 - 报价必须保留参数快照，可追溯
 - 模板输出不应主导内核结构
+- 承担方（burden_side）必须显式标注，不得隐含假设
+- `profit_gap` 只能用 L3 (effective_price) - L1 (internal_cost)，禁止其他组合
 
 ---
 
@@ -818,20 +865,32 @@ BOM 发生变化（新增/替换/取消）
 **功能定位**: 一次性费用的完整经营闭环
 
 **分摊管理页面**:
-- 费用类型、线束号、总金额、单根分摊、计划回收、已回收、未回收、状态
+- 费用类型、线束号、总金额、单根分摊、承担方、定价影响、计划回收、已回收、未回收、状态
 - 回收进度条可视化
+- 按承担方（供应商/客户/分担）分组展示
 
 **分摊详情**:
-- 分摊依据、当前场景、关键参数快照、回收进度轨迹、调价提醒状态
+- 分摊依据、baseline_volume（独立业务输入）、当前场景、关键参数快照
+- 承担方（burden_side）+ 定价影响（pricing_effect）
+- 回收完成行为（recovery_completion_behavior）配置
+- 回收进度轨迹、调价提醒状态
 
 **回收记录**:
 - 时间周期、累计产量、装车比快照、回收金额、剩余金额、状态
 
+**回收完成→调价生命周期**:
+1. `recovery_progress >= 100%` → 触发 `recovery_completion_behavior`
+2. 若 `trigger_price_adjust` → 自动创建调价跟踪项 + 设置 `price_adjust_reminder = true` + 通知相关人员
+3. 调价确认后 → 更新 QuoteSnapshot 的 `effective_price` + 切换 `effective_price_mode`
+4. 归档分摊项 → `status = closed`
+
 **核心规则**:
 - 按线束号独立、按根分摊，不得笼统平均
+- `baseline_volume` 是独立业务输入，不应简单等同于 `volume × install_ratio`
 - 回收按 装车比 × 累计产量 判断
-- 分摊 ≠ 回收（分摊=成本口径，回收=执行进度），分层实现
-- 回收完成触发调价提醒
+- **分摊 ≠ 回收**（分摊=成本口径的费用分配方式，回收=执行层面的资金回收进度），必须分层实现
+- **承担方必须显式**：每个分摊项必须标注 `burden_side`，不得默认全部为供应商承担
+- 回收完成触发调价提醒（按 `recovery_completion_behavior` 配置执行）
 - 残余材料不继续计入当前产品成本
 
 ---
@@ -959,12 +1018,13 @@ BOM 发生变化（新增/替换/取消）
 ### 9.2 关键 UI 组件
 - **Dashboard 卡片**: 成本汇总、报价汇总、利润差异、回收进度
 - **数据表格**: 可排序、可筛选、可内联编辑的专业表格
-- **对比视图**: 双列对比（内部成本 vs 客户报价）
+- **对比视图**: 双列对比（内部成本 vs 客户报价），价格层次标注（L1/L2/L3）
 - **状态标签**: 彩色状态 badge（草稿/进行中/已完成/已关闭）
 - **进度条**: 回收进度可视化
 - **瀑布图**: 利润归因可视化
 - **预警徽章**: 右上角预警计数
 - **面包屑**: 项目 > 场景 > 模块的层级导航
+- **字段权限标记**: 🔒 锁定 / ✏️ 可编辑 / ⚠️ 待审批
 
 ### 9.3 响应式
 - 桌面优先（主要使用场景）
@@ -986,8 +1046,9 @@ harness_cost = SUM(bom_rows.unit_cost) WHERE harness_id = ?
 
 ### 10.3 单根分摊
 ```
-unit_allocation = total_amount / (volume × install_ratio)
+unit_allocation = total_amount / baseline_volume
 ```
+> ⚠️ `baseline_volume` 应作为独立业务输入（由用户根据实际情况填写），不应简单等同于 `volume × install_ratio`。默认可预填为 `volume × install_ratio`，但用户可修改。
 
 ### 10.4 回收进度
 ```
@@ -997,21 +1058,36 @@ actual_recovered = cumulative_volume × install_ratio × unit_allocation
 
 ### 10.5 利润差异
 ```
-profit_gap = quote_result.arrival_price - internal_cost_baseline
+profit_gap = effective_customer_price - internal_cost_baseline
 ```
+> 其中 `effective_customer_price` = QuoteSnapshot.effective_price（L3 当前有效执行价），不得使用 L2 客户确认快照价或其他层次价格替代。
 
-### 10.6 金属价格联动
+### 10.6 当前有效执行价（L3）
+```
+IF all related allocation_items.status IN [completed, closed]:
+    effective_price = ex_works_price          -- 分摊已全部回收，使用出厂价
+    effective_price_mode = 'ex_works'
+ELIF any related allocation_items.pricing_effect = 'included_in_price':
+    effective_price = arrival_price           -- 分摊含入价格且尚在回收中，使用到厂价
+    effective_price_mode = 'arrival'
+ELSE:
+    effective_price = ex_works_price          -- 分摊不含入价格（单独开票/仅内部），使用出厂价
+    effective_price_mode = 'ex_works'
+```
+> 有效执行价在每次回收记录更新、分摊项状态变更时自动重新计算。
+
+### 10.7 金属价格联动
 ```
 metal_cost_impact = metal_weight × (current_metal_price - base_metal_price)
 ```
 
-### 10.7 设变成本影响
+### 10.8 设变成本影响
 ```
 cost_impact = SUM(after_bom_rows.unit_cost) - SUM(before_bom_rows.unit_cost)
 residual_impact = SUM(cancelled_rows.unit_cost × remaining_quantity)
 ```
 
-### 10.8 年降影响
+### 10.9 年降影响
 ```
 cost_after = cost_before × (1 - drop_rate)
 profit_impact = (quote_before - cost_after) - (quote_before - cost_before)
@@ -1023,11 +1099,16 @@ profit_impact = (quote_before - cost_after) - (quote_before - cost_before)
 
 ### 做
 - ✅ 内部核算为主对象
+- ✅ 三层价格模型（内部核算价 / 客户确认快照价 / 当前有效执行价）
 - ✅ 线束号/BOM 行颗粒度
-- ✅ 按根分摊、装车比×累计产量回收
+- ✅ 按根分摊、baseline_volume 作为独立业务输入
+- ✅ 装车比×累计产量回收
 - ✅ 双引擎并行（内部成本 + 客户报价）
 - ✅ 多场景并行管理
 - ✅ 关键节点参数快照化
+- ✅ 承担方（burden_side）显式标注
+- ✅ 分摊≠回收分层实现
+- ✅ 字段级权限控制（locked/editable/approval）
 - ✅ 预警规则系统
 - ✅ 版本追溯
 
@@ -1048,8 +1129,8 @@ profit_impact = (quote_before - cost_after) - (quote_before - cost_before)
 1. 能新建项目、搜索项目、进入项目
 2. 能在项目下创建多个场景（区分类型）
 3. 能录入/导入 BOM，按线束号和分类查看
-4. 能创建报价快照，查看内部成本 vs 客户报价差异
-5. 能录入一次性费用，查看单根分摊和回收进度
+4. 能创建报价快照，查看内部成本 vs 客户报价差异（使用三层价格模型）
+5. 能录入一次性费用，指定承担方，查看单根分摊和回收进度
 6. 能创建设变事件，查看成本/报价影响
 7. 能创建跟踪项，管理执行状态
 8. 场景之间能做基础指标对比
@@ -1060,7 +1141,7 @@ profit_impact = (quote_before - cost_after) - (quote_before - cost_before)
 11. 年降能设定周期和降幅，查看影响
 12. 预警规则能配置、能触发、能查看
 13. Alerts 页面能分类筛选和处理状态
-14. 回收记录能逐期追踪
+14. 回收记录能逐期追踪，回收完成自动触发 recovery_completion_behavior
 15. 设变能自动计算影响和残余材料池
 
 ### P2 — 治理与增强
@@ -1077,3 +1158,4 @@ profit_impact = (quote_before - cost_after) - (quote_before - cost_before)
 - 表格支持 1000+ 行 BOM 数据
 - SQLite 数据持久化，刷新不丢失
 - 深色主题视觉一致性
+- 价格层次标注清晰（L1/L2/L3 不得遗漏）
