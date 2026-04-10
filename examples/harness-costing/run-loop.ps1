@@ -49,11 +49,11 @@ for ($round = 1; $round -le $TotalRuns; $round++) {
     $done = Get-TaskCount "done"
 
     if ($pending -eq 0) {
-        Write-Host "[DONE] All tasks completed! ($done done)" -ForegroundColor Green
+        Write-Host "[DONE] All tasks completed! (${done} done)" -ForegroundColor Green
         break
     }
 
-    Write-Host "== Round $round / $TotalRuns == Pending: $pending | Done: $done ==" -ForegroundColor Cyan
+    Write-Host "== Round ${round} / ${TotalRuns} == Pending: ${pending} | Done: ${done} ==" -ForegroundColor Cyan
 
     $roundStart = Get-Date
     $runLog = Join-Path $LogDir ("round-" + $round + "-" + (Get-Date -Format 'yyyyMMdd_HHmmss') + ".log")
@@ -75,11 +75,11 @@ for ($round = 1; $round -le $TotalRuns; $round++) {
     $tasksDone = $afterDone - $done
 
     if ($tasksDone -gt 0) {
-        Write-Host "[SUCCESS] Round $round: +$tasksDone task(s) in $secs s" -ForegroundColor Green
+        Write-Host "[SUCCESS] Round ${round}: +${tasksDone} task(s) in ${secs} s" -ForegroundColor Green
     } else {
-        Write-Host "[WARNING] Round $round: 0 tasks in $secs s" -ForegroundColor Yellow
+        Write-Host "[WARNING] Round ${round}: 0 tasks in ${secs} s" -ForegroundColor Yellow
     }
-    Write-Host "[INFO] Total: $afterDone done, $afterPending pending" -ForegroundColor Blue
+    Write-Host "[INFO] Total: ${afterDone} done, ${afterPending} pending" -ForegroundColor Blue
     Write-Host ""
 
     Start-Sleep -Seconds 3
