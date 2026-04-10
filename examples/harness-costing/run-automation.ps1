@@ -17,6 +17,9 @@ $LogFile = "$LogDir\automation-$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
 # Claude Code source directory (where bun run dev works)
 $ClaudeCodeDir = "C:\Users\lyvee\source\cloud-code"
 
+# Project directory (where task.json / CLAUDE.md live)
+$ProjectDir = Get-Location
+
 function Write-Log {
     param([string]$Level, [string]$Message)
     $timestamp = Get-Date -Format 'yyyy-MM-dd HH:mm:ss'
@@ -33,8 +36,9 @@ function Write-Log {
 }
 
 function Get-PendingTaskCount {
-    if (Test-Path "task.json") {
-        $content = Get-Content "task.json" -Raw
+    $taskFile = Join-Path $ProjectDir "task.json"
+    if (Test-Path $taskFile) {
+        $content = Get-Content $taskFile -Raw
         return ([regex]::Matches($content, '"status":\s*"pending"')).Count
     }
     return 0
@@ -60,12 +64,16 @@ New-Item -ItemType Directory -Force -Path ".\test-screenshots" | Out-Null
 
 $InitialTasks = Get-PendingTaskCount
 Write-Log "INFO" "Starting automation, planned $TotalRuns rounds"
+Write-Log "INFO" "Project dir: $ProjectDir"
+Write-Log "INFO" "Claude Code dir: $ClaudeCodeDir"
 Write-Log "INFO" "Remaining tasks: $InitialTasks"
 Write-Log "INFO" "Log file: $LogFile"
 
-# Prompt template
+# Prompt template - includes cd to project dir so Claude works there
 $Prompt = @"
-Please follow the workflow in CLAUDE.md:
+First, run: cd $ProjectDir
+
+Then follow the workflow in CLAUDE.md:
 1. Run .\init.ps1 to initialize the environment
 2. Read task.json and select the next task with status: "pending" (respect depends_on)
 3. Implement the task following all steps in scope
@@ -99,16 +107,22 @@ for ($run = 1; $run -le $TotalRuns; $run++) {
     
     Write-Log "INFO" "Starting Claude Code session..."
     
-    # Run in -p mode (non-interactive, auto-exit on completion)
-    # --cwd points bun to Claude Code source; Claude works in current dir
+    # Switch to Claude Code dir so bun finds the dev script,
+    # then Claude will cd to project dir via the prompt
     try {
-        $Prompt | & "C:\Users\lyvee\.bun\bin\bun.exe" run --cwd "$ClaudeCodeDir" dev -- -p `
+        Push-Location $ClaudeCodeDir
+        & "C:\Users\lyvee\.bun\bin\bun.exe" run dev -- `
+            -p "$Prompt" `
             --dangerously-skip-permissions `
+            --add-dir "$ProjectDir" `
             --allowed-tools "Bash Edit Read Write Glob Grep Task WebSearch WebFetch mcp__playwright__*" `
             2>&1 | Tee-Object -FilePath $runLog
     }
     catch {
         Write-Log "WARNING" "Round $run exited abnormally: $_"
+    }
+    finally {
+        Pop-Location
     }
     
     $runEnd = Get-Date
