@@ -1,18 +1,21 @@
 # =============================================================================
-# run-automation.ps1 - Windows 自动化任务循环
+# run-automation.ps1 - Windows Automated Task Loop
 # =============================================================================
-# 用法：powershell -ExecutionPolicy Bypass -File run-automation.ps1 38
-# 参数：总运行轮数（默认 38，即 task.json 中的任务总数）
+# Usage: powershell -ExecutionPolicy Bypass -File run-automation.ps1 38
+# Param: Total rounds (default 38 = total tasks in task.json)
 # =============================================================================
 
 param(
     [int]$TotalRuns = 38
 )
 
-# 日志目录
+# Log directory
 $LogDir = ".\automation-logs"
 New-Item -ItemType Directory -Force -Path $LogDir | Out-Null
 $LogFile = "$LogDir\automation-$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
+
+# Claude Code source directory (where bun run dev works)
+$ClaudeCodeDir = "C:\Users\lyvee\source\cloud-code"
 
 function Write-Log {
     param([string]$Level, [string]$Message)
@@ -40,27 +43,27 @@ function Get-PendingTaskCount {
 # Banner
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Cyan
-Write-Host "  高压线束精算引擎 — 自动化开发循环" -ForegroundColor Cyan
+Write-Host "  Harness Costing Engine - Auto Dev Loop" -ForegroundColor Cyan
 Write-Host "========================================" -ForegroundColor Cyan
 Write-Host ""
 
-# 检查必要文件
+# Check required files
 foreach ($file in @("task.json", "CLAUDE.md", "app_spec.md")) {
     if (-not (Test-Path $file)) {
-        Write-Log "ERROR" "$file 未找到！请确保在项目根目录运行。"
+        Write-Log "ERROR" "$file not found! Make sure you run from project root."
         exit 1
     }
 }
 
-# 创建 test-screenshots 目录
+# Create test-screenshots dir
 New-Item -ItemType Directory -Force -Path ".\test-screenshots" | Out-Null
 
 $InitialTasks = Get-PendingTaskCount
-Write-Log "INFO" "开始自动化，计划运行 $TotalRuns 轮"
-Write-Log "INFO" "剩余任务: $InitialTasks"
-Write-Log "INFO" "日志文件: $LogFile"
+Write-Log "INFO" "Starting automation, planned $TotalRuns rounds"
+Write-Log "INFO" "Remaining tasks: $InitialTasks"
+Write-Log "INFO" "Log file: $LogFile"
 
-# Prompt 模板
+# Prompt template
 $Prompt = @"
 Please follow the workflow in CLAUDE.md:
 1. Run .\init.ps1 to initialize the environment
@@ -75,37 +78,37 @@ Please complete only ONE task in this session, then stop.
 Do NOT ask if you should continue. Just finish and exit.
 "@
 
-# 主循环
+# Main loop
 for ($run = 1; $run -le $TotalRuns; $run++) {
     Write-Host ""
     Write-Host "========================================" -ForegroundColor Cyan
-    Write-Log "PROGRESS" "第 $run / $TotalRuns 轮"
+    Write-Log "PROGRESS" "Round $run / $TotalRuns"
     Write-Host "========================================" -ForegroundColor Cyan
     
     $remaining = Get-PendingTaskCount
     
     if ($remaining -eq 0) {
-        Write-Log "SUCCESS" "所有任务已完成！"
+        Write-Log "SUCCESS" "All tasks completed!"
         break
     }
     
-    Write-Log "INFO" "本轮开始前剩余任务: $remaining"
+    Write-Log "INFO" "Tasks remaining before this round: $remaining"
     
     $runStart = Get-Date
     $runLog = "$LogDir\run-$run-$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
     
-    Write-Log "INFO" "启动 Claude Code session..."
+    Write-Log "INFO" "Starting Claude Code session..."
     
-    # 用 -p 模式运行（非交互，执行完自动退出）
-    # 注意：根据你的 Claude Code 版本，可能需要调整命令
+    # Run in -p mode (non-interactive, auto-exit on completion)
+    # --cwd points bun to Claude Code source; Claude works in current dir
     try {
-        $Prompt | & "C:\Users\lyvee\.bun\bin\bun.exe" run dev -- -p `
+        $Prompt | & "C:\Users\lyvee\.bun\bin\bun.exe" run --cwd "$ClaudeCodeDir" dev -- -p `
             --dangerously-skip-permissions `
             --allowed-tools "Bash Edit Read Write Glob Grep Task WebSearch WebFetch mcp__playwright__*" `
             2>&1 | Tee-Object -FilePath $runLog
     }
     catch {
-        Write-Log "WARNING" "第 $run 轮异常退出: $_"
+        Write-Log "WARNING" "Round $run exited abnormally: $_"
     }
     
     $runEnd = Get-Date
@@ -115,37 +118,37 @@ for ($run = 1; $run -le $TotalRuns; $run++) {
     $completed = $remaining - $remainingAfter
     
     if ($completed -gt 0) {
-        Write-Log "SUCCESS" "第 $run 轮完成 $completed 个任务 (耗时 ${duration}s)"
+        Write-Log "SUCCESS" "Round $run completed $completed task(s) (${duration}s)"
     } else {
-        Write-Log "WARNING" "第 $run 轮未完成任何任务 (耗时 ${duration}s)"
+        Write-Log "WARNING" "Round $run completed 0 tasks (${duration}s)"
     }
     
-    Write-Log "INFO" "剩余任务: $remainingAfter"
+    Write-Log "INFO" "Remaining tasks: $remainingAfter"
     
-    # 轮间等待
+    # Wait between rounds
     if ($run -lt $TotalRuns -and $remainingAfter -gt 0) {
-        Write-Log "INFO" "等待 3 秒后开始下一轮..."
+        Write-Log "INFO" "Waiting 3 seconds before next round..."
         Start-Sleep -Seconds 3
     }
 }
 
-# 最终汇总
+# Final summary
 Write-Host ""
 Write-Host "========================================" -ForegroundColor Green
-Write-Log "SUCCESS" "自动化运行结束！"
+Write-Log "SUCCESS" "Automation run finished!"
 Write-Host "========================================" -ForegroundColor Green
 
 $finalRemaining = Get-PendingTaskCount
 $totalCompleted = $InitialTasks - $finalRemaining
 
-Write-Log "INFO" "汇总:"
-Write-Log "INFO" "  总轮数: $TotalRuns"
-Write-Log "INFO" "  完成任务: $totalCompleted"
-Write-Log "INFO" "  剩余任务: $finalRemaining"
-Write-Log "INFO" "  日志文件: $LogFile"
+Write-Log "INFO" "Summary:"
+Write-Log "INFO" "  Total rounds: $TotalRuns"
+Write-Log "INFO" "  Tasks completed: $totalCompleted"
+Write-Log "INFO" "  Tasks remaining: $finalRemaining"
+Write-Log "INFO" "  Log file: $LogFile"
 
 if ($finalRemaining -eq 0) {
-    Write-Log "SUCCESS" "所有任务已完成！🎉"
+    Write-Log "SUCCESS" "All tasks completed!"
 } else {
-    Write-Log "WARNING" "仍有 $finalRemaining 个任务未完成，可能需要更多轮次或人工介入。"
+    Write-Log "WARNING" "$finalRemaining task(s) remain. May need more rounds or manual intervention."
 }
